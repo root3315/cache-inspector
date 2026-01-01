@@ -57,59 +57,101 @@ def calculate_md5(filepath: str) -> str:
         return "unreadable"
 
 
-def inspect_pickle_file(filepath: str) -> Dict[str, Any]:
+def _unpack_nested_data(data: Any, depth: int, max_depth: int) -> Dict[str, Any]:
+    """Recursively unpack nested cache structures."""
+    if depth >= max_depth:
+        return {"type": type(data).__name__, "value": str(data)[:200], "truncated": True}
+
+    result: Dict[str, Any] = {"type": type(data).__name__}
+
+    if isinstance(data, dict):
+        result["item_count"] = len(data)
+        result["children"] = {}
+        for key, value in list(data.items())[:10]:
+            result["children"][str(key)] = _unpack_nested_data(value, depth + 1, max_depth)
+    elif isinstance(data, (list, tuple)):
+        result["item_count"] = len(data)
+        result["children"] = []
+        for i, item in enumerate(list(data)[:10]):
+            result["children"].append(_unpack_nested_data(item, depth + 1, max_depth))
+    elif isinstance(data, set):
+        result["item_count"] = len(data)
+        result["children"] = [_unpack_nested_data(item, depth + 1, max_depth) for item in list(data)[:10]]
+    elif isinstance(data, bytes):
+        result["value"] = f"<bytes: {len(data)} bytes>"
+    elif isinstance(data, (str, int, float, bool, type(None))):
+        result["value"] = str(data)[:200]
+    else:
+        result["value"] = str(data)[:200]
+
+    return result
+
+
+def inspect_pickle_file(filepath: str, unpack_nested: bool = False, max_depth: int = 3) -> Dict[str, Any]:
     """Load and inspect a pickle cache file."""
     try:
         with open(filepath, "rb") as f:
             data = pickle.load(f)
-        
-        result = {
+
+        result: Dict[str, Any] = {
             "type": "pickle",
             "data_type": str(type(data).__name__),
             "top_level_keys": None,
             "item_count": None,
             "sample_data": None,
         }
-        
+
         if isinstance(data, dict):
             result["top_level_keys"] = list(data.keys())[:20]
             result["item_count"] = len(data)
-            result["sample_data"] = {k: str(v)[:100] for k, v in list(data.items())[:5]}
+            if unpack_nested:
+                result["nested_structure"] = _unpack_nested_data(data, 0, max_depth)
+            else:
+                result["sample_data"] = {k: str(v)[:100] for k, v in list(data.items())[:5]}
         elif isinstance(data, (list, tuple, set)):
             result["item_count"] = len(data)
-            result["sample_data"] = [str(item)[:100] for item in list(data)[:5]]
+            if unpack_nested:
+                result["nested_structure"] = _unpack_nested_data(data, 0, max_depth)
+            else:
+                result["sample_data"] = [str(item)[:100] for item in list(data)[:5]]
         else:
             result["sample_data"] = str(data)[:500]
-        
+
         return result
     except Exception as e:
         return {"error": f"Failed to load pickle: {str(e)}"}
 
 
-def inspect_json_file(filepath: str) -> Dict[str, Any]:
+def inspect_json_file(filepath: str, unpack_nested: bool = False, max_depth: int = 3) -> Dict[str, Any]:
     """Load and inspect a JSON cache file."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
-        result = {
+
+        result: Dict[str, Any] = {
             "type": "json",
             "data_type": str(type(data).__name__),
             "top_level_keys": None,
             "item_count": None,
             "sample_data": None,
         }
-        
+
         if isinstance(data, dict):
             result["top_level_keys"] = list(data.keys())[:20]
             result["item_count"] = len(data)
-            result["sample_data"] = {k: str(v)[:100] for k, v in list(data.items())[:5]}
+            if unpack_nested:
+                result["nested_structure"] = _unpack_nested_data(data, 0, max_depth)
+            else:
+                result["sample_data"] = {k: str(v)[:100] for k, v in list(data.items())[:5]}
         elif isinstance(data, list):
             result["item_count"] = len(data)
-            result["sample_data"] = [str(item)[:100] for item in data[:5]]
+            if unpack_nested:
+                result["nested_structure"] = _unpack_nested_data(data, 0, max_depth)
+            else:
+                result["sample_data"] = [str(item)[:100] for item in data[:5]]
         else:
             result["sample_data"] = str(data)[:500]
-        
+
         return result
     except Exception as e:
         return {"error": f"Failed to load JSON: {str(e)}"}
@@ -152,73 +194,97 @@ def inspect_sqlite_cache(filepath: str) -> Dict[str, Any]:
         return {"error": f"Failed to inspect SQLite: {str(e)}"}
 
 
-def scan_directory_cache(dirpath: str, max_depth: int = 2) -> Dict[str, Any]:
+def scan_directory_cache(
+    dirpath: str,
+    max_depth: int = 2,
+    unpack_nested: bool = False,
+    unpack_max_depth: int = 3,
+) -> Dict[str, Any]:
     """Scan a directory for cache files and summarize contents."""
     path = Path(dirpath)
     if not path.exists() or not path.is_dir():
         return {"error": "Directory not found or not accessible"}
-    
-    result = {
+
+    result: Dict[str, Any] = {
         "path": str(path.absolute()),
         "total_files": 0,
         "total_dirs": 0,
         "total_size": 0,
         "file_types": {},
         "files": [],
+        "cache_files": [],
     }
-    
+
+    cache_extensions = {".pkl", ".pickle", ".json", ".db", ".sqlite"}
+
     for root, dirs, files in os.walk(dirpath):
         current_depth = root.count(os.sep) - str(path).count(os.sep)
         if current_depth >= max_depth:
             dirs.clear()
             continue
-        
+
         result["total_dirs"] += len(dirs)
-        
+
         for filename in files:
             filepath = os.path.join(root, filename)
             result["total_files"] += 1
-            
+
             try:
                 size = os.path.getsize(filepath)
                 result["total_size"] += size
-                
+
                 ext = Path(filename).suffix.lower() or "no_extension"
                 result["file_types"][ext] = result["file_types"].get(ext, 0) + 1
-                
-                result["files"].append({
+
+                file_info = {
                     "name": filename,
                     "size": format_size(size),
                     "relative_path": os.path.relpath(filepath, dirpath),
-                })
+                }
+                result["files"].append(file_info)
+
+                if unpack_nested and ext in cache_extensions:
+                    cache_info = inspect_cache(filepath, unpack_nested=True, unpack_max_depth=unpack_max_depth)
+                    cache_info["relative_path"] = file_info["relative_path"]
+                    result["cache_files"].append(cache_info)
+
             except (OSError, PermissionError):
                 continue
-    
+
     result["total_size_human"] = format_size(result["total_size"])
     result["files"] = sorted(result["files"], key=lambda x: x["relative_path"])
-    
+
     return result
 
 
-def inspect_cache(path: str, cache_type: Optional[str] = None) -> Dict[str, Any]:
+def inspect_cache(
+    path: str,
+    cache_type: Optional[str] = None,
+    unpack_nested: bool = False,
+    unpack_max_depth: int = 3,
+) -> Dict[str, Any]:
     """Main inspection function that routes to appropriate handler."""
     path_obj = Path(path)
-    
+
     if not path_obj.exists():
         return {"error": f"Path does not exist: {path}"}
-    
+
     if cache_type == "pickle" or path.endswith(".pkl") or path.endswith(".pickle"):
-        return inspect_pickle_file(path)
-    
+        return inspect_pickle_file(path, unpack_nested=unpack_nested, max_depth=unpack_max_depth)
+
     if cache_type == "json" or path.endswith(".json"):
-        return inspect_json_file(path)
-    
+        return inspect_json_file(path, unpack_nested=unpack_nested, max_depth=unpack_max_depth)
+
     if cache_type == "sqlite" or path.endswith(".db") or path.endswith(".sqlite"):
         return inspect_sqlite_cache(path)
-    
+
     if path_obj.is_dir():
-        return scan_directory_cache(path)
-    
+        return scan_directory_cache(
+            path,
+            unpack_nested=unpack_nested,
+            unpack_max_depth=unpack_max_depth,
+        )
+
     return get_file_info(path)
 
 
@@ -252,9 +318,10 @@ Examples:
   %(prog)s /tmp/my_cache.pkl --type pickle
   %(prog)s cache.db --type sqlite
   %(prog)s --find-locations
+  %(prog)s data.pkl --unpack-nested --unpack-depth 5
         """
     )
-    
+
     parser.add_argument(
         "path",
         nargs="?",
@@ -282,9 +349,20 @@ Examples:
         action="store_true",
         help="Show verbose output with all details"
     )
-    
+    parser.add_argument(
+        "--unpack-nested", "-u",
+        action="store_true",
+        help="Recursively unpack nested cache structures (e.g., pickles containing JSON)"
+    )
+    parser.add_argument(
+        "--unpack-depth", "-d",
+        type=int,
+        default=3,
+        help="Maximum depth for nested unpacking (default: 3)"
+    )
+
     args = parser.parse_args()
-    
+
     if args.find_locations:
         locations = find_common_cache_locations()
         if args.output == "json":
@@ -294,19 +372,45 @@ Examples:
             for loc in locations:
                 print(f"  - {loc}")
         return 0
-    
+
     if not args.path:
         parser.print_help()
         return 1
-    
-    result = inspect_cache(args.path, args.type if args.type != "auto" else None)
-    
+
+    result = inspect_cache(
+        args.path,
+        args.type if args.type != "auto" else None,
+        unpack_nested=args.unpack_nested,
+        unpack_max_depth=args.unpack_depth,
+    )
+
     if args.output == "json":
         print(json.dumps(result, indent=2, default=str))
     else:
         print_cache_report(result, args.verbose)
-    
+
     return 0 if "error" not in result else 1
+
+
+def _print_nested_structure(data: Dict[str, Any], indent: int = 0) -> None:
+    """Print nested structure with indentation."""
+    prefix = "  " * indent
+    item_type = data.get("type", "unknown")
+    
+    if "value" in data:
+        print(f"{prefix}{item_type}: {data['value']}")
+        return
+    
+    if "children" in data:
+        children = data["children"]
+        if isinstance(children, dict):
+            for key, child in children.items():
+                print(f"{prefix}{key} ({item_type}):")
+                _print_nested_structure(child, indent + 1)
+        elif isinstance(children, list):
+            for i, child in enumerate(children):
+                print(f"{prefix}[{i}] ({item_type}):")
+                _print_nested_structure(child, indent + 1)
 
 
 def print_cache_report(result: Dict[str, Any], verbose: bool = False) -> None:
@@ -314,45 +418,45 @@ def print_cache_report(result: Dict[str, Any], verbose: bool = False) -> None:
     if "error" in result:
         print(f"Error: {result['error']}")
         return
-    
+
     print("=" * 60)
     print("CACHE INSPECTION REPORT")
     print("=" * 60)
-    
+
     if "path" in result:
         print(f"\nPath: {result['path']}")
-    
+
     if "type" in result:
         print(f"Type: {result['type'].upper()}")
-    
+
     if "data_type" in result:
         print(f"Data Type: {result['data_type']}")
-    
+
     if "size_bytes" in result:
         print(f"\nSize: {result['size_human']} ({result['size_bytes']:,} bytes)")
         print(f"Created: {result['created']}")
         print(f"Modified: {result['modified']}")
         print(f"MD5: {result['md5']}")
-    
+
     if "total_files" in result:
         print(f"\nDirectory Statistics:")
         print(f"  Total Files: {result['total_files']}")
         print(f"  Total Directories: {result['total_dirs']}")
         print(f"  Total Size: {result['total_size_human']}")
-        
+
         if result["file_types"]:
             print(f"\n  File Types:")
             for ext, count in sorted(result["file_types"].items()):
                 print(f"    {ext}: {count} files")
-    
+
     if "item_count" in result:
         print(f"\nItem Count: {result['item_count']:,}")
-    
+
     if "top_level_keys" in result and result["top_level_keys"]:
         print(f"\nTop-level Keys (first 20):")
         for key in result["top_level_keys"]:
             print(f"  - {key}")
-    
+
     if "tables" in result:
         print(f"\nSQLite Tables: {', '.join(result['tables'])}")
         for table, info in result.get("table_info", {}).items():
@@ -363,7 +467,11 @@ def print_cache_report(result: Dict[str, Any], verbose: bool = False) -> None:
                 print(f"    Sample Rows:")
                 for row in info["sample_rows"]:
                     print(f"      {row}")
-    
+
+    if "nested_structure" in result and result["nested_structure"]:
+        print(f"\nNested Structure:")
+        _print_nested_structure(result["nested_structure"])
+
     if "sample_data" in result and result["sample_data"]:
         print(f"\nSample Data:")
         if isinstance(result["sample_data"], dict):
@@ -374,14 +482,23 @@ def print_cache_report(result: Dict[str, Any], verbose: bool = False) -> None:
                 print(f"  [{i}]: {item}")
         else:
             print(f"  {result['sample_data']}")
-    
+
     if "files" in result and result["files"]:
         print(f"\nFiles (first 50):")
         for f in result["files"][:50]:
             print(f"  {f['relative_path']} ({f['size']})")
         if len(result["files"]) > 50:
             print(f"  ... and {len(result['files']) - 50} more files")
-    
+
+    if "cache_files" in result and result["cache_files"]:
+        print(f"\nCache Files (with nested content):")
+        for cf in result["cache_files"]:
+            print(f"\n  File: {cf.get('relative_path', 'unknown')}")
+            if "nested_structure" in cf:
+                _print_nested_structure(cf["nested_structure"], indent=2)
+            elif "item_count" in cf:
+                print(f"    Items: {cf['item_count']}")
+
     print("\n" + "=" * 60)
 
 
