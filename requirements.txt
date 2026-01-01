@@ -1,0 +1,4 @@
+# No external dependencies required
+# This project uses only Python standard library modules:
+# - argparse, hashlib, json, os, pickle, sqlite3, sys
+# - datetime, pathlib, typing
