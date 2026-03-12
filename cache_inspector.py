@@ -7,6 +7,7 @@ Supports filesystem caches, pickle files, JSON caches, and more.
 import argparse
 import hashlib
 import json
+import logging
 import os
 import pickle
 import sqlite3
@@ -15,13 +16,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+logger = logging.getLogger(__name__)
+
 
 def get_file_info(filepath: str) -> Dict[str, Any]:
     """Get detailed file information including size, timestamps, and hash."""
     path = Path(filepath)
     if not path.exists():
         return {"error": "File not found"}
-    
+
     stat = path.stat()
     return {
         "path": str(path.absolute()),
@@ -119,6 +122,7 @@ def inspect_pickle_file(filepath: str, unpack_nested: bool = False, max_depth: i
 
         return result
     except Exception as e:
+        logger.error("Failed to load pickle: %s", str(e))
         return {"error": f"Failed to load pickle: {str(e)}"}
 
 
@@ -154,6 +158,7 @@ def inspect_json_file(filepath: str, unpack_nested: bool = False, max_depth: int
 
         return result
     except Exception as e:
+        logger.error("Failed to load JSON: %s", str(e))
         return {"error": f"Failed to load JSON: {str(e)}"}
 
 
@@ -162,35 +167,36 @@ def inspect_sqlite_cache(filepath: str) -> Dict[str, Any]:
     try:
         conn = sqlite3.connect(filepath)
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
-        
+
         result = {
             "type": "sqlite",
             "tables": tables,
             "table_info": {},
         }
-        
+
         for table in tables:
             cursor.execute(f"SELECT COUNT(*) FROM {table}")
             count = cursor.fetchone()[0]
-            
+
             cursor.execute(f"PRAGMA table_info({table})")
             columns = [(col[1], col[2]) for col in cursor.fetchall()]
-            
+
             cursor.execute(f"SELECT * FROM {table} LIMIT 3")
             sample_rows = cursor.fetchall()
-            
+
             result["table_info"][table] = {
                 "row_count": count,
                 "columns": columns,
                 "sample_rows": [str(row)[:200] for row in sample_rows],
             }
-        
+
         conn.close()
         return result
     except Exception as e:
+        logger.error("Failed to inspect SQLite: %s", str(e))
         return {"error": f"Failed to inspect SQLite: {str(e)}"}
 
 
@@ -249,6 +255,7 @@ def scan_directory_cache(
                     result["cache_files"].append(cache_info)
 
             except (OSError, PermissionError):
+                logger.warning("Could not access file: %s", filepath)
                 continue
 
     result["total_size_human"] = format_size(result["total_size"])
@@ -267,6 +274,7 @@ def inspect_cache(
     path_obj = Path(path)
 
     if not path_obj.exists():
+        logger.error("Path does not exist: %s", path)
         return {"error": f"Path does not exist: {path}"}
 
     if cache_type == "pickle" or path.endswith(".pkl") or path.endswith(".pickle"):
@@ -292,7 +300,7 @@ def find_common_cache_locations() -> List[str]:
     """Find common cache directories on the system."""
     locations = []
     home = Path.home()
-    
+
     common_paths = [
         home / ".cache",
         home / ".local" / "share" / "cache",
@@ -300,11 +308,11 @@ def find_common_cache_locations() -> List[str]:
         Path("/tmp"),
         Path("/var/cache"),
     ]
-    
+
     for loc in common_paths:
         if loc.exists():
             locations.append(str(loc))
-    
+
     return locations
 
 
@@ -363,6 +371,11 @@ Examples:
 
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s"
+    )
+
     if args.find_locations:
         locations = find_common_cache_locations()
         if args.output == "json":
@@ -396,11 +409,11 @@ def _print_nested_structure(data: Dict[str, Any], indent: int = 0) -> None:
     """Print nested structure with indentation."""
     prefix = "  " * indent
     item_type = data.get("type", "unknown")
-    
+
     if "value" in data:
         print(f"{prefix}{item_type}: {data['value']}")
         return
-    
+
     if "children" in data:
         children = data["children"]
         if isinstance(children, dict):
@@ -416,7 +429,7 @@ def _print_nested_structure(data: Dict[str, Any], indent: int = 0) -> None:
 def print_cache_report(result: Dict[str, Any], verbose: bool = False) -> None:
     """Print a formatted text report of cache inspection results."""
     if "error" in result:
-        print(f"Error: {result['error']}")
+        logger.error(result["error"])
         return
 
     print("=" * 60)
