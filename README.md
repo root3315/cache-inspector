@@ -60,6 +60,15 @@ python cache_inspector.py cache.sqlite --type sqlite
 
 Lists tables, row counts, columns, and sample rows.
 
+### Unpack nested cache structures
+
+```bash
+python cache_inspector.py nested_data.pkl --unpack-nested
+python cache_inspector.py complex_cache.json -u --unpack-depth 5
+```
+
+Recursively unpacks nested structures like pickles containing JSON, dicts with lists of dicts, etc. Shows the full hierarchy up to the specified depth.
+
 ### Find cache locations
 
 ```bash
@@ -116,10 +125,10 @@ Files (first 50):
 
 ## Limitations
 
-- Doesn't recursively unpack nested caches (yet)
 - Large pickle files might take a moment to load
 - SQLite inspection is read-only (by design)
 - No support for Redis, Memcached, or other network caches
+- Nested unpacking is limited to depth 3 by default (configurable via `--unpack-depth`)
 
 ## Adding More Formats
 
