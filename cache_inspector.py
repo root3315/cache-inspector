@@ -205,6 +205,7 @@ def scan_directory_cache(
     max_depth: int = 2,
     unpack_nested: bool = False,
     unpack_max_depth: int = 3,
+    show_progress: bool = False,
 ) -> Dict[str, Any]:
     """Scan a directory for cache files and summarize contents."""
     path = Path(dirpath)
@@ -223,6 +224,11 @@ def scan_directory_cache(
 
     cache_extensions = {".pkl", ".pickle", ".json", ".db", ".sqlite"}
 
+    if show_progress:
+        print(f"Scanning: {path.absolute()}")
+
+    files_processed = 0
+
     for root, dirs, files in os.walk(dirpath):
         current_depth = root.count(os.sep) - str(path).count(os.sep)
         if current_depth >= max_depth:
@@ -234,6 +240,10 @@ def scan_directory_cache(
         for filename in files:
             filepath = os.path.join(root, filename)
             result["total_files"] += 1
+            files_processed += 1
+
+            if show_progress and files_processed % 100 == 0:
+                print(f"  Processed {files_processed} files...", end="\r")
 
             try:
                 size = os.path.getsize(filepath)
@@ -258,6 +268,9 @@ def scan_directory_cache(
                 logger.warning("Could not access file: %s", filepath)
                 continue
 
+    if show_progress:
+        print(f"  Processed {files_processed} files. Done!        ")
+
     result["total_size_human"] = format_size(result["total_size"])
     result["files"] = sorted(result["files"], key=lambda x: x["relative_path"])
 
@@ -269,6 +282,7 @@ def inspect_cache(
     cache_type: Optional[str] = None,
     unpack_nested: bool = False,
     unpack_max_depth: int = 3,
+    show_progress: bool = False,
 ) -> Dict[str, Any]:
     """Main inspection function that routes to appropriate handler."""
     path_obj = Path(path)
@@ -291,6 +305,7 @@ def inspect_cache(
             path,
             unpack_nested=unpack_nested,
             unpack_max_depth=unpack_max_depth,
+            show_progress=show_progress,
         )
 
     return get_file_info(path)
@@ -368,6 +383,11 @@ Examples:
         default=3,
         help="Maximum depth for nested unpacking (default: 3)"
     )
+    parser.add_argument(
+        "--progress", "-p",
+        action="store_true",
+        help="Show progress bar for large directory scans"
+    )
 
     args = parser.parse_args()
 
@@ -395,6 +415,7 @@ Examples:
         args.type if args.type != "auto" else None,
         unpack_nested=args.unpack_nested,
         unpack_max_depth=args.unpack_depth,
+        show_progress=args.progress,
     )
 
     if args.output == "json":
